@@ -4,7 +4,7 @@
 #include <linux/netdevice.h>
 #include <linux/if_arp.h>
 #include <linux/rtnetlink.h>
-//#include <linux/etherdevice.h>
+#include <linux/etherdevice.h>
 
 #define N_ESP8266 26
 
@@ -24,28 +24,36 @@ struct esp8266 {
 #define ESPF_ERROR		1	/* Parity error, etc. */
 };
 
-static struct net_device *esp_dev;
-
 
 /* Netdevice DOWN -> UP routine */
 static int espnet_open(struct net_device *dev)
 {
-	struct esp8266 *esp = netdev_priv(dev);
-	/* unsigned char buf[] = {0x85, 0xab, 0x98, 0x9f, 0x13, 0x7e}; */
+	printk("esp8266: espnet_open called\n");
 
-	if (esp->tty == NULL)
+	struct esp8266 *esp = netdev_priv(dev);
+
+	if (esp->tty == NULL) {
+		printk("esp8266: No TTY device\n");
 		return -ENODEV;
+	}
 
 	netif_start_queue(dev);
-
-
-	/* esp->tty->ops->write(esp->tty, buf, sizeof(buf)); */
 
 	return 0;
 }
 
 static netdev_tx_t espnet_xmit(struct sk_buff *skb, struct net_device *dev)
 {
+	printk("esp8266: espnet_xmit called\n");
+
+	int bytes;
+	struct esp8266 *esp = netdev_priv(dev);
+	unsigned char buf[] = {0x84, 0xde, 0xad, 0xf5, 0xb5, 0x7e};
+
+	/* set_bit(TTY_DO_WRITE_WAKEUP, &esp->tty->flags); */
+	bytes = esp->tty->ops->write(esp->tty, buf, sizeof(buf));
+	printk("esp8266: Write complete: %d\n", bytes);
+
 	return NETDEV_TX_OK;
 }
 
@@ -82,20 +90,11 @@ static void esp_free_netdev(struct net_device *dev)
 
 static void esp_setup(struct net_device *dev)
 {
+	ether_setup(dev);
 	dev->netdev_ops		= &esp_netdev_ops;
 	dev->destructor		= esp_free_netdev;
 
-	dev->hard_header_len	= 0;
-	dev->addr_len		= 0;
-	dev->tx_queue_len	= 10;
-
 	dev->mtu		= 1500;
-	/* fixme: Need to set appropriate macro here */
-	dev->type		= ARPHRD_ETHER;
-
-	/* New-style flags. */
-	//	dev->flags		= 0;
-	//	dev->features           = NETIF_F_HW_CSUM;
 }
 
 static int esptty_open(struct tty_struct *tty)
@@ -104,13 +103,7 @@ static int esptty_open(struct tty_struct *tty)
 	char name[IFNAMSIZ];
 	struct esp8266 *esp;
 	struct net_device *dev = NULL;
-	/* unsigned char mac_addr[] = {0x5c, 0xcf, 0x7f, 0x0b, 0x9c, 0xb6}; */
-
-	dev = esp_dev;
-	if (dev == NULL) {
-		printk("esp8266: Null device\n");
-		return -1;
-	}
+	unsigned char mac_addr[] = {0x5c, 0xcf, 0x7f, 0x0b, 0x9c, 0xb6};
 
 	rtnl_lock();
 
@@ -122,14 +115,14 @@ static int esptty_open(struct tty_struct *tty)
 		return -1;
 	}
 
-	dev->base_addr = 0;
+	ether_addr_copy(dev->dev_addr, mac_addr);
+	ether_addr_copy(dev->perm_addr, mac_addr);
+
 	esp = netdev_priv(dev);
 	/* fixme: add magic check here */
 	esp->dev = dev;
 	esp->tty = tty;
 	tty->disc_data = esp;
-
-	/* ether_addr_copy(dev->dev_addr, mac_addr); */
 
 	err = register_netdevice(esp->dev);
 	if (err) {
@@ -141,31 +134,39 @@ static int esptty_open(struct tty_struct *tty)
 	}
 
 	rtnl_unlock();
+
+	tty->receive_room = 65536; /* Enables receive */
+
 	return 0;
 }
 
 static void esptty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 			       char *fp, int count)
 {
+	printk("esp8266: esptty_receive_buf called\n");
+
 	struct esp8266 *esp = tty->disc_data;
 
 	/* fixme: Add magic no check */
 
 	/* Read the characters out of the buffer */
+	printk("Data received: ");
 	while (count--) {
 		if (fp && *fp++) {
 			if (!test_and_set_bit(ESPF_ERROR, &esp->flags))
 				esp->dev->stats.rx_errors++;
 			cp++;
+			printk("esp8266: Parity Errors\n");
 			continue;
 		}
-		printk("Data: received: %s", cp);
+		printk(KERN_CONT "%02X", *cp++);
 	}
-
 }
 
 static void esptty_close(struct tty_struct *tty)
 {
+	printk("esp8266: esptty_close called\n");
+
 	struct esp8266 *esp = (struct esp8266 *) tty->disc_data;
 
 	tty->disc_data = NULL;
@@ -189,14 +190,9 @@ static int __init esp8266_init(void)
 
 	pr_info("esp8266: ESP8266 network driver\n");
 
-	esp_dev = kzalloc(sizeof(struct net_device *), GFP_KERNEL);
-	if (!esp_dev)
-		return -ENOMEM;
-
 	status = tty_register_ldisc(N_ESP8266, &esp8266_ldisc);
 	if (status) {
 		printk(KERN_ERR "esp8266: can't register line discipline\n");
-		kfree(esp_dev);
 	}
 	return status;
 }
