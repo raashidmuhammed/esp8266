@@ -1,5 +1,7 @@
 #define LSB(x) (0x00FF & x)
 #define MSB(x) ((0xFF00 & x) >> 8)
+#define MIN_BYTE_EXPECTED 3
+#define MAX_FRAME_LEN 4080
 #define BUF_SIZE 4080
 #define MAX_TX_BUF_SIZE 256
 

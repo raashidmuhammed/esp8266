@@ -35,12 +35,24 @@ struct esp8266 {
 #define ESPF_ERROR		1	/* Parity error, etc. */
 };
 
-static void print_buf(struct esp8266 *esp)
+
+static void print_buf(uint8_t *buf, uint8_t len)
 {
 	int index;
 
-	for(index = 0; index < esp->xpos; index++)
-		printk(KERN_CONT "%02X", esp->xbuff[index]);
+	for(index = 0; index < len; index++)
+		printk(KERN_CONT "%02X", buf[index]);
+	printk("\n");
+}
+
+static void print_msg(struct esp8266 *esp)
+{
+	int index;
+
+	printk(KERN_CONT "%02X,", esp->msg_type);
+
+	for(index = 0; index < esp->len; index++)
+		printk(KERN_CONT "%02X", esp->data[index]);
 	printk("\n");
 }
 
@@ -58,7 +70,7 @@ static int byte_send(struct esp8266 *esp, uint8_t byte)
 			return -1;
 
 		printk("Tx frame: ");
-		print_buf(esp);
+		print_buf(esp->xbuff, esp->xpos);
 
 		esp->xpos = 0;
 	}
@@ -85,6 +97,67 @@ static int stuff_tx_byte(struct esp8266 *esp, uint8_t byte)
 	return 0;
 }
 
+static int byte_destuff_packet(struct esp8266 *esp)
+{
+	int flag = 0;
+	int i = 0;
+	int j = 0;
+
+
+	while (i < esp->len) {
+		if (esp->data[i] == SERIAL_ESC_BYTE) {
+			flag = 1;
+			i++;
+			continue;
+		}
+
+		if (j == (MAX_FRAME_LEN / 2))
+			return -1;
+
+		if (flag == 1) {
+			esp->data[j++] = esp->data[i++]
+				^ SERIAL_XOR_BYTE;
+			flag = 0;
+			continue;
+		}
+		esp->data[j++] = esp->data[i++];
+	}
+
+	esp->len = j;
+
+	return 0;
+}
+
+static int parse_data(struct esp8266 *esp)
+{
+
+	uint16_t crc_l;
+
+	if (esp->len < MIN_BYTE_EXPECTED)
+		return -1;
+
+	esp->msg_type = esp->data[0];
+
+	esp->crc = esp->data[--(esp->len)];
+	crc_l = esp->data[--(esp->len)];
+	esp->crc <<= 8;
+	esp->crc = esp->crc | crc_l;
+
+	return 0;
+}
+
+static int check_data_integrity(struct esp8266 *esp)
+{
+	uint16_t cal_crc;
+
+	cal_crc = crc16_ccitt_block(esp->data, esp->len);
+
+	if (esp->crc != cal_crc)
+		return -3;
+
+	return 0;
+}
+
 static int crc_stuff_tx_byte(struct esp8266 *esp, uint8_t byte)
 {
 	int ret;
@@ -93,6 +166,32 @@ static int crc_stuff_tx_byte(struct esp8266 *esp, uint8_t byte)
 	ret = stuff_tx_byte(esp, byte);
 
 	return ret;
+}
+
+static int esp_read(struct esp8266 *esp)
+{
+	if (byte_destuff_packet(esp) < 0) {
+		printk("destuff error\n");
+		return -1;
+	}
+
+
+	if (parse_data(esp) < 0){
+		printk("parse_data error\n");
+		return -1;
+	}
+
+
+	if (check_data_integrity(esp)) {
+		printk("crc failure\n");
+		/* fixme: set crc failures */
+		return -1;
+	}
+
+	memmove(esp->data, &esp->data[1], esp->len - 1);
+	esp->len = esp->len - 1;
+
+	return 0;
 }
 
 static int esp_send(struct esp8266 *esp)
@@ -126,6 +225,7 @@ static int esp_send(struct esp8266 *esp)
 	return 0;
 }
 
+
 static int espnet_init(struct net_device *dev)
 {
 	printk("esp8266: espnet_init called");
@@ -135,7 +235,9 @@ static int espnet_init(struct net_device *dev)
 	esp->msg_type = MSG_ECHO_REQUEST;
 	esp->data[0] = 0xde;
 	esp->data[1] = 0xad;
-	esp->len = 2;
+	esp->data[2] = 0xbe;
+	esp->data[3] = 0xef;
+	esp->len = 4;
 
 	esp_send(esp);
 
@@ -256,11 +358,15 @@ static void esptty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 	printk("esp8266: esptty_receive_buf called\n");
 
 	struct esp8266 *esp = tty->disc_data;
+	int index = 0;
+	int ret;
 
 	/* fixme: Add magic no check */
 
+	/* fixme: copying data is unnecessary */
+	esp->len = count - 1 /* Exclude end of frame */;
+
 	/* Read the characters out of the buffer */
-	printk("Data received: ");
 	while (count--) {
 		if (fp && *fp++) {
 			if (!test_and_set_bit(ESPF_ERROR, &esp->flags))
@@ -269,9 +375,16 @@ static void esptty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 			printk("esp8266: Parity Errors\n");
 			continue;
 		}
-		printk(KERN_CONT "%02X", *cp++);
+		esp->data[index] = *(cp + index);
+		index++;
 	}
-	printk("\n");
+
+	ret = esp_read(esp);
+	if (ret < 0)
+		printk("esp8266: esp receive error\n");
+
+	printk("Received data: ");
+	print_msg(esp);
 }
 
 static void esptty_close(struct tty_struct *tty)
