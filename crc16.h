@@ -27,10 +27,11 @@
 
 #ifndef _CRC16_H_
 #define _CRC16_H_
+#include <linux/types.h>
 
 #define CRC16_CCITT_INIT_VALUE 0
 
 void crc16_ccitt_update(unsigned short *crc, unsigned int data);
-unsigned short crc16_ccitt_block(const unsigned int *buf, int len);
+unsigned short crc16_ccitt_block(const uint8_t *buf, int len);
 
 #endif /* _CRC16_H_ */
