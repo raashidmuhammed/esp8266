@@ -5,6 +5,8 @@
 #include <linux/if_arp.h>
 #include <linux/rtnetlink.h>
 #include <linux/etherdevice.h>
+#include "crc16.h"
+#include "esp8266.h"
 
 #define N_ESP8266 26
 
@@ -20,10 +22,125 @@ struct esp8266 {
 	struct tty_struct	*tty;
 	struct net_device	*dev;
 
+	uint8_t			xbuff[4080];
+	uint8_t			xpos;
+	uint8_t			xlen;
+
+	uint8_t			msg_type;
+	uint8_t			data[BUF_SIZE];
+	uint8_t			len;
+	uint16_t		crc;
+
 	unsigned long 		flags;
 #define ESPF_ERROR		1	/* Parity error, etc. */
 };
 
+static void print_buf(struct esp8266 *esp)
+{
+	int index;
+
+	for(index = 0; index < esp->xpos; index++)
+		printk(KERN_CONT "%02X", esp->xbuff[index]);
+	printk("\n");
+}
+
+/* fixme: Give proper function name */
+static int byte_send(struct esp8266 *esp, uint8_t byte)
+{
+	int bytes;
+
+	esp->xbuff[esp->xpos] = byte;
+	esp->xpos += 1;
+
+	if ((esp->xpos == MAX_TX_BUF_SIZE) || (byte == SERIAL_STOP_BYTE)) {
+		bytes = esp->tty->ops->write(esp->tty, esp->xbuff, esp->xpos);
+		if (bytes < 0)
+			return -1;
+
+		printk("Tx frame: ");
+		print_buf(esp);
+
+		esp->xpos = 0;
+	}
+	return 0;
+}
+
+static int stuff_tx_byte(struct esp8266 *esp, uint8_t byte)
+{
+	int ret;
+
+	if ((byte == SERIAL_STOP_BYTE) || (byte == SERIAL_ESC_BYTE)) {
+		ret = byte_send(esp, SERIAL_ESC_BYTE);
+		if (ret < 0)
+			return -1;
+
+		ret = byte_send(esp, byte ^ SERIAL_XOR_BYTE);
+		if (ret < 0)
+			return -1;
+	} else {
+		ret = byte_send(esp, byte);
+		if (ret < 0)
+			return -1;
+	}
+	return 0;
+}
+
+static int crc_stuff_tx_byte(struct esp8266 *esp, uint8_t byte)
+{
+	int ret;
+
+	crc16_ccitt_update(&esp->crc, byte);
+	ret = stuff_tx_byte(esp, byte);
+
+	return ret;
+}
+
+static int esp_send(struct esp8266 *esp)
+{
+	int ret;
+	int index;
+
+	esp->crc = 0;
+
+	ret = crc_stuff_tx_byte(esp, esp->msg_type);
+	if (ret < 0)
+		return -1;
+
+	for(index = 0; index < esp->len; index++){
+		ret = crc_stuff_tx_byte(esp, esp->data[index]);
+		if (ret < 0)
+			return -1;
+	}
+	ret = stuff_tx_byte(esp, LSB(esp->crc));
+	if (ret < 0)
+		return -1;
+
+	ret = stuff_tx_byte(esp, MSB(esp->crc));
+	if (ret < 0)
+		return -1;
+
+	ret = byte_send(esp, SERIAL_STOP_BYTE);
+	if (ret < 0)
+		return -1;
+
+	return 0;
+}
+
+static int espnet_init(struct net_device *dev)
+{
+	printk("esp8266: espnet_init called");
+
+	struct esp8266 *esp = netdev_priv(dev);
+
+	esp->msg_type = MSG_ECHO_REQUEST;
+	esp->data[0] = 0xde;
+	esp->data[1] = 0xad;
+	esp->len = 2;
+
+	esp_send(esp);
+
+	return 0;
+}
 
 /* Netdevice DOWN -> UP routine */
 static int espnet_open(struct net_device *dev)
@@ -45,14 +162,6 @@ static int espnet_open(struct net_device *dev)
 static netdev_tx_t espnet_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	printk("esp8266: espnet_xmit called\n");
-
-	int bytes;
-	struct esp8266 *esp = netdev_priv(dev);
-	unsigned char buf[] = {0x84, 0xde, 0xad, 0xf5, 0xb5, 0x7e};
-
-	/* set_bit(TTY_DO_WRITE_WAKEUP, &esp->tty->flags); */
-	bytes = esp->tty->ops->write(esp->tty, buf, sizeof(buf));
-	printk("esp8266: Write complete: %d\n", bytes);
 
 	return NETDEV_TX_OK;
 }
@@ -77,6 +186,7 @@ static int espnet_close(struct net_device *dev)
 }
 
 static const struct net_device_ops esp_netdev_ops = {
+	.ndo_init		= espnet_init,
 	.ndo_open               = espnet_open,
 	.ndo_stop               = espnet_close,
 	.ndo_start_xmit         = espnet_xmit,
@@ -161,6 +271,7 @@ static void esptty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 		}
 		printk(KERN_CONT "%02X", *cp++);
 	}
+	printk("\n");
 }
 
 static void esptty_close(struct tty_struct *tty)
