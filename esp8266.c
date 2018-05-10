@@ -21,6 +21,7 @@ struct esp8266 {
 
 	struct tty_struct	*tty;
 	struct net_device	*dev;
+	spinlock_t		lock;
 
 	uint8_t			xbuff[4080];
 	uint8_t			xpos;
@@ -243,13 +244,24 @@ static int configure_esp(struct esp8266 *esp, uint8_t msg_type, uint8_t mode)
 	return 0;
 }
 
+static void generate_connect_header(struct msg_station_conf *conf, char *ssid, char *password)
+{
+	memset(conf, 0, sizeof(struct msg_station_conf));
+	conf->msg_type = MSG_STATION_CONF_SET;
+	conf->ssid_len = strlen(ssid);
+	conf->password_len = strlen(password);
+	memcpy(&conf->ssid, ssid, conf->ssid_len);
+	memcpy(&conf->password, password, conf->password_len);
+}
+
 static int espnet_init(struct net_device *dev)
 {
 	printk("esp8266: espnet_init called");
 
-	int i;
 	struct esp8266 *esp = netdev_priv(dev);
-
+	struct msg_station_conf conf;
+	char ssid[32] = "Raashid-samsung";
+	char password[64] = "12345678";
 
 	if (configure_esp(esp, MSG_WIFI_SLEEP_MODE_SET, WIFI_SLEEP_NONE) < 0) {
 		printk("esp8266: Error Initializing Sleep Mode");
@@ -265,16 +277,13 @@ static int espnet_init(struct net_device *dev)
 		return -1;
 	}
 
-	for (i = 0; i < 100000; i++) {
-		esp->msg_type = MSG_ECHO_REQUEST;
-		esp->data[0] = 0xde;
-		esp->data[1] = 0xad;
-		esp->data[2] = 0xbe;
-		esp->data[3] = 0xef;
-		esp->len = 4;
-
-		esp_send(esp);
-	}
+	/* fixme: establishing connection with AP */
+	generate_connect_header(&conf, ssid, password);
+	esp->msg_type = conf.msg_type;
+	memmove(esp->data, &conf, sizeof(struct msg_station_conf));
+	esp->len = sizeof(struct msg_station_conf) - 1;
+	memmove(esp->data, &esp->data[1], esp->len);
+	esp_send(esp);
 
 	esp->len = 0;
 
@@ -302,6 +311,28 @@ static netdev_tx_t espnet_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	printk("esp8266: espnet_xmit called\n");
 
+	struct esp8266 *esp = netdev_priv(dev);
+
+	/* fixme: should mtu check be done at this point */
+
+	spin_lock(&esp->lock);
+	if (!netif_running(dev)) {
+		spin_unlock(&esp->lock);
+		printk(KERN_WARNING "esp8266: %s: xmit: iface is down\n", dev->name);
+		goto out;
+	}
+	if (esp->tty == NULL) {
+		spin_unlock(&esp->lock);
+		goto out;
+	}
+
+	netif_stop_queue(esp->dev);
+	//	esp_send ...;
+
+	spin_unlock(&esp->lock);
+
+out:
+	kfree_skb(skb);
 	return NETDEV_TX_OK;
 }
 
@@ -364,6 +395,7 @@ static int esptty_open(struct tty_struct *tty)
 		return -1;
 	}
 
+	/* fixme: get mac from esp before setting */
 	ether_addr_copy(dev->dev_addr, mac_addr);
 	ether_addr_copy(dev->perm_addr, mac_addr);
 

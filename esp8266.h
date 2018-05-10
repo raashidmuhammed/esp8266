@@ -40,8 +40,19 @@ enum ESP_MSG_TYPE {
 	MSG_ETHER_PACKET = 0x01,
 	MSG_WIFI_GET_MACADDR_REQUEST = 0x25,
 	MSG_WIFI_GET_MACADDR_REPLY = 0x26,
+	MSG_STATION_CONF_SET = 0x40,
+	MSG_STATION_CONN_STATUS_REQUEST = 0x45,
+	MSG_STATION_CONN_STATUS_REPLY = 0x46,
 	MSG_ECHO_REQUEST = 0x84,
 	MSG_ECHO_REPLY = 0x85,
 	MSG_SET_BAUD = 0x86,
 	MSG_LOG = 0x83
+};
+
+struct msg_station_conf {
+	uint8_t msg_type;
+	uint8_t ssid_len;
+	uint8_t ssid[32];
+	uint8_t password_len;
+	uint8_t password[64];
 };
