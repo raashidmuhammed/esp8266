@@ -36,6 +36,12 @@ struct esp8266 {
 };
 
 
+static void print_stats(struct esp8266 *esp)
+{
+	printk("Rx Errors: %ld\n", esp->dev->stats.rx_errors);
+	printk("CRC Errors: %ld\n", esp->dev->stats.rx_crc_errors);
+}
+
 static void print_buf(uint8_t *buf, uint8_t len)
 {
 	int index;
@@ -171,20 +177,20 @@ static int crc_stuff_tx_byte(struct esp8266 *esp, uint8_t byte)
 static int esp_read(struct esp8266 *esp)
 {
 	if (byte_destuff_packet(esp) < 0) {
-		printk("destuff error\n");
+		printk("esp8266: destuff error\n");
 		return -1;
 	}
 
 
 	if (parse_data(esp) < 0){
-		printk("parse_data error\n");
+		printk("esp8266: parse_data error\n");
 		return -1;
 	}
 
 
 	if (check_data_integrity(esp)) {
-		printk("crc failure\n");
-		/* fixme: set crc failures */
+		printk("esp8266: crc failure\n");
+		esp->dev->stats.rx_crc_errors++;
 		return -1;
 	}
 
@@ -226,20 +232,51 @@ static int esp_send(struct esp8266 *esp)
 }
 
 
+static int configure_esp(struct esp8266 *esp, uint8_t msg_type, uint8_t mode)
+{
+	esp->msg_type = msg_type;
+	esp->data[0] = mode;
+	esp->len = 1;
+	if (esp_send(esp) < 0)
+		return -1;
+
+	return 0;
+}
+
 static int espnet_init(struct net_device *dev)
 {
 	printk("esp8266: espnet_init called");
 
+	int i;
 	struct esp8266 *esp = netdev_priv(dev);
 
-	esp->msg_type = MSG_ECHO_REQUEST;
-	esp->data[0] = 0xde;
-	esp->data[1] = 0xad;
-	esp->data[2] = 0xbe;
-	esp->data[3] = 0xef;
-	esp->len = 4;
 
-	esp_send(esp);
+	if (configure_esp(esp, MSG_WIFI_SLEEP_MODE_SET, WIFI_SLEEP_NONE) < 0) {
+		printk("esp8266: Error Initializing Sleep Mode");
+		return -1;
+	}
+	if (configure_esp(esp, MSG_SET_FORWARDING_MODE, FORWARDING_MODE_ETHER) < 0) {
+		printk("esp8266: Error Initializing Forwarding Mode");
+		return -1;
+	}
+
+	if (configure_esp(esp, MSG_WIFI_MODE_SET, DEVICE_MODE_STAION) < 0) {
+		printk("esp8266: Error Initializing Device Mode");
+		return -1;
+	}
+
+	for (i = 0; i < 100000; i++) {
+		esp->msg_type = MSG_ECHO_REQUEST;
+		esp->data[0] = 0xde;
+		esp->data[1] = 0xad;
+		esp->data[2] = 0xbe;
+		esp->data[3] = 0xef;
+		esp->len = 4;
+
+		esp_send(esp);
+	}
+
+	esp->len = 0;
 
 	return 0;
 }
@@ -334,6 +371,7 @@ static int esptty_open(struct tty_struct *tty)
 	/* fixme: add magic check here */
 	esp->dev = dev;
 	esp->tty = tty;
+	esp->len = 0;
 	tty->disc_data = esp;
 
 	err = register_netdevice(esp->dev);
@@ -363,28 +401,32 @@ static void esptty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 
 	/* fixme: Add magic no check */
 
-	/* fixme: copying data is unnecessary */
-	esp->len = count - 1 /* Exclude end of frame */;
-
 	/* Read the characters out of the buffer */
 	while (count--) {
 		if (fp && *fp++) {
 			if (!test_and_set_bit(ESPF_ERROR, &esp->flags))
-				esp->dev->stats.rx_errors++;
+ 				esp->dev->stats.rx_errors++;
 			cp++;
 			printk("esp8266: Parity Errors\n");
 			continue;
 		}
-		esp->data[index] = *(cp + index);
+		esp->data[esp->len] = *(cp + index);
+		if (esp->data[esp->len] == SERIAL_STOP_BYTE) {
+			printk("Received data: ");
+			print_buf(esp->data, esp->len);
+			ret = esp_read(esp);
+			if (ret < 0)
+				printk("esp8266: esp receive error\n");
+
+			printk("Parsed data: ");
+			print_msg(esp);
+			esp->len = -1;
+		}
+
 		index++;
+		esp->len++;
 	}
-
-	ret = esp_read(esp);
-	if (ret < 0)
-		printk("esp8266: esp receive error\n");
-
-	printk("Received data: ");
-	print_msg(esp);
+	print_stats(esp);
 }
 
 static void esptty_close(struct tty_struct *tty)
