@@ -22,14 +22,16 @@ struct esp8266 {
 	struct tty_struct	*tty;
 	struct net_device	*dev;
 	spinlock_t		lock;
+	struct work_struct	tx_work; 	/* Flush xmit buffer */
 
 	uint8_t			xbuff[4080];
-	uint8_t			xpos;
-	uint8_t			xlen;
+	uint8_t			*xhead;      	/* Pointer to next xmit byte */
+	int			xleft;		/* Bytes left in xmit queue */
+	unsigned int		xpos;
 
 	uint8_t			msg_type;
 	uint8_t			data[BUF_SIZE];
-	uint8_t			len;
+	unsigned int		len;
 	uint16_t		crc;
 
 	unsigned long 		flags;
@@ -43,7 +45,7 @@ static void print_stats(struct esp8266 *esp)
 	printk("CRC Errors: %ld\n", esp->dev->stats.rx_crc_errors);
 }
 
-static void print_buf(uint8_t *buf, uint8_t len)
+static void print_buf(uint8_t *buf, unsigned int len)
 {
 	int index;
 
@@ -66,19 +68,31 @@ static void print_msg(struct esp8266 *esp)
 /* fixme: Give proper function name */
 static int byte_send(struct esp8266 *esp, uint8_t byte)
 {
-	int bytes;
+	int actual;
 
 	esp->xbuff[esp->xpos] = byte;
 	esp->xpos += 1;
 
 	if ((esp->xpos == MAX_TX_BUF_SIZE) || (byte == SERIAL_STOP_BYTE)) {
-		bytes = esp->tty->ops->write(esp->tty, esp->xbuff, esp->xpos);
-		if (bytes < 0)
+		set_bit(TTY_DO_WRITE_WAKEUP, &esp->tty->flags);
+		actual = esp->tty->ops->write(esp->tty, esp->xbuff, esp->xpos);
+		if (actual < 0) {
+			printk("esp8266: Serial write failed\n");
 			return -1;
+		}
 
+		/* Handling partial writes */
+		esp->xleft = esp->xpos - actual;
+		esp->xhead = esp->xbuff + actual;
+		/* fixme: Should tx_bytes be incremented here */
+		esp->dev->stats.tx_bytes += actual;
+
+		/* fixme: Assuming all bytes have been written */
+		//		netif_wake_queue(esp->dev);
 		printk("Tx frame: ");
 		print_buf(esp->xbuff, esp->xpos);
-
+		printk("Actually Transmitted: ");
+		print_buf(esp->xbuff, actual);
 		esp->xpos = 0;
 	}
 	return 0;
@@ -317,22 +331,30 @@ static netdev_tx_t espnet_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	spin_lock(&esp->lock);
 	if (!netif_running(dev)) {
-		spin_unlock(&esp->lock);
 		printk(KERN_WARNING "esp8266: %s: xmit: iface is down\n", dev->name);
 		goto out;
 	}
 	if (esp->tty == NULL) {
-		spin_unlock(&esp->lock);
 		goto out;
 	}
 
 	netif_stop_queue(esp->dev);
-	//	esp_send ...;
+	dev->stats.tx_bytes += skb->len;
+	esp->msg_type = MSG_ETHER_PACKET;
+	esp->len = skb->len;
+	printk("esp8266: Skbuffer: %d ", skb->len);
+	print_buf(skb->data, skb->len);
+	memmove(esp->data, skb->data, skb->len);
+	esp_send(esp);
 
-	spin_unlock(&esp->lock);
+	esp->len = 0;
+
+
 
 out:
+	spin_unlock(&esp->lock);
 	kfree_skb(skb);
+	printk("esp8266: xmit exit\n");
 	return NETDEV_TX_OK;
 }
 
@@ -353,6 +375,39 @@ static int espnet_close(struct net_device *dev)
 	netif_stop_queue(dev);
 
 	return 0;
+}
+
+static void esp_transmit(struct work_struct *work)
+{
+	printk("esp8266: esp_transmit called\n");
+
+	struct esp8266 *esp = container_of(work, struct esp8266, tx_work);
+	int actual;
+
+	spin_lock_bh(&esp->lock);
+	/* First make sure we're connected. */
+	if (!esp->tty || !netif_running(esp->dev)) {
+		spin_unlock_bh(&esp->lock);
+		return;
+	}
+
+	if (esp->xleft <= 0) {
+		/* Now serial buffer is almost free & we can start
+		 * transmission of another packet */
+		esp->dev->stats.tx_packets++;
+		clear_bit(TTY_DO_WRITE_WAKEUP, &esp->tty->flags);
+		spin_unlock_bh(&esp->lock);
+		netif_wake_queue(esp->dev);
+		return;
+	}
+
+	actual = esp->tty->ops->write(esp->tty, esp->xhead, esp->xleft);
+	esp->xleft -= actual;
+	esp->xhead += actual;
+	spin_unlock_bh(&esp->lock);
+	printk("esp8266: esp_transmit transmitted %d bytes\n", actual);
+	printk("esp8266: esp_transmit Trasmitted: ");
+	print_buf(esp->xhead, actual);
 }
 
 static const struct net_device_ops esp_netdev_ops = {
@@ -404,6 +459,8 @@ static int esptty_open(struct tty_struct *tty)
 	esp->dev = dev;
 	esp->tty = tty;
 	esp->len = 0;
+	spin_lock_init(&esp->lock);
+	INIT_WORK(&esp->tx_work, esp_transmit);
 	tty->disc_data = esp;
 
 	err = register_netdevice(esp->dev);
@@ -428,6 +485,7 @@ static void esptty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 	printk("esp8266: esptty_receive_buf called\n");
 
 	struct esp8266 *esp = tty->disc_data;
+	struct sk_buff *skb;
 	int index = 0;
 	int ret;
 
@@ -452,13 +510,28 @@ static void esptty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 
 			printk("Parsed data: ");
 			print_msg(esp);
+			if (esp->msg_type == MSG_ETHER_PACKET) {
+				//		skb = dev_alloc_skb();
+
+			}
 			esp->len = -1;
 		}
 
 		index++;
 		esp->len++;
 	}
-	print_stats(esp);
+	//	print_stats(esp);
+}
+
+/*
+ * Called by the driver when there's room for more data.
+ * Schedule the transmit.
+ */
+static void esptty_write_wakeup(struct tty_struct *tty)
+{
+	struct esp8266 *esp = tty->disc_data;
+
+	schedule_work(&esp->tx_work);
 }
 
 static void esptty_close(struct tty_struct *tty)
@@ -469,6 +542,7 @@ static void esptty_close(struct tty_struct *tty)
 
 	tty->disc_data = NULL;
 	esp->tty = NULL;
+	flush_work(&esp->tx_work);
 	unregister_netdev(esp->dev);
 }
 
@@ -480,6 +554,7 @@ static struct tty_ldisc_ops esp8266_ldisc = {
 	.open		= esptty_open,
 	.close		= esptty_close,
 	.receive_buf 	= esptty_receive_buf,
+	.write_wakeup	= esptty_write_wakeup,
 };
 
 static int __init esp8266_init(void)
