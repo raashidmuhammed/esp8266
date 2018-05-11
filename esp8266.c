@@ -353,7 +353,7 @@ static netdev_tx_t espnet_xmit(struct sk_buff *skb, struct net_device *dev)
 
 out:
 	spin_unlock(&esp->lock);
-	kfree_skb(skb);
+	dev_kfree_skb(skb);
 	printk("esp8266: xmit exit\n");
 	return NETDEV_TX_OK;
 }
@@ -479,6 +479,26 @@ static int esptty_open(struct tty_struct *tty)
 	return 0;
 }
 
+static void esp_forward(struct esp8266 *esp)
+{
+	printk("esp8266: esp_forward called\n");
+
+	struct sk_buff *skb;
+
+	esp->dev->stats.rx_bytes += esp->len;
+	skb = dev_alloc_skb(esp->len);
+	if (skb == NULL) {
+		printk(KERN_WARNING "%s: memory squeeze, dropping packet.\n", esp->dev->name);
+		esp->dev->stats.rx_dropped++;
+		return;
+	}
+	skb->dev = esp->dev;
+	memcpy(skb_put(skb, esp->len), esp->data, esp->len);
+	skb->protocol = eth_type_trans(skb, esp->dev);
+	netif_rx_ni(skb);
+	esp->dev->stats.rx_packets++;
+}
+
 static void esptty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 			       char *fp, int count)
 {
@@ -510,10 +530,8 @@ static void esptty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 
 			printk("Parsed data: ");
 			print_msg(esp);
-			if (esp->msg_type == MSG_ETHER_PACKET) {
-				//		skb = dev_alloc_skb();
-
-			}
+			if (esp->msg_type == MSG_ETHER_PACKET)
+				esp_forward(esp);
 			esp->len = -1;
 		}
 
