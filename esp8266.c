@@ -38,13 +38,6 @@ struct esp8266 {
 #define ESPF_ERROR		1	/* Parity error, etc. */
 };
 
-
-static void print_stats(struct esp8266 *esp)
-{
-	printk("Rx Errors: %ld\n", esp->dev->stats.rx_errors);
-	printk("CRC Errors: %ld\n", esp->dev->stats.rx_crc_errors);
-}
-
 static void print_buf(uint8_t *buf, unsigned int len)
 {
 	int index;
@@ -84,11 +77,8 @@ static int byte_send(struct esp8266 *esp, uint8_t byte)
 		/* Handling partial writes */
 		esp->xleft = esp->xpos - actual;
 		esp->xhead = esp->xbuff + actual;
-		/* fixme: Should tx_bytes be incremented here */
 		esp->dev->stats.tx_bytes += actual;
 
-		/* fixme: Assuming all bytes have been written */
-		//		netif_wake_queue(esp->dev);
 		printk("Tx frame: ");
 		print_buf(esp->xbuff, esp->xpos);
 		printk("Actually Transmitted: ");
@@ -196,12 +186,10 @@ static int esp_read(struct esp8266 *esp)
 		return -1;
 	}
 
-
 	if (parse_data(esp) < 0){
 		printk("esp8266: parse_data error\n");
 		return -1;
 	}
-
 
 	if (check_data_integrity(esp)) {
 		printk("esp8266: crc failure\n");
@@ -349,8 +337,6 @@ static netdev_tx_t espnet_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	esp->len = 0;
 
-
-
 out:
 	spin_unlock(&esp->lock);
 	dev_kfree_skb(skb);
@@ -358,10 +344,6 @@ out:
 	return NETDEV_TX_OK;
 }
 
-static int espnet_change_mtu(struct net_device *dev, int new_mtu)
-{
-	return 0;
-}
 
 /* Netdevice UP -> DOWN routine */
 static int espnet_close(struct net_device *dev)
@@ -415,7 +397,6 @@ static const struct net_device_ops esp_netdev_ops = {
 	.ndo_open               = espnet_open,
 	.ndo_stop               = espnet_close,
 	.ndo_start_xmit         = espnet_xmit,
-	.ndo_change_mtu         = espnet_change_mtu,
 };
 
 static void esp_free_netdev(struct net_device *dev)
@@ -455,7 +436,7 @@ static int esptty_open(struct tty_struct *tty)
 	ether_addr_copy(dev->perm_addr, mac_addr);
 
 	esp = netdev_priv(dev);
-	/* fixme: add magic check here */
+	/* fixme: Is magic no check required? */
 	esp->dev = dev;
 	esp->tty = tty;
 	esp->len = 0;
@@ -509,7 +490,7 @@ static void esptty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 	int index = 0;
 	int ret;
 
-	/* fixme: Add magic no check */
+	/* fixme: Is magic no check required? */
 
 	/* Read the characters out of the buffer */
 	while (count--) {
@@ -538,7 +519,6 @@ static void esptty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 		index++;
 		esp->len++;
 	}
-	//	print_stats(esp);
 }
 
 /*
