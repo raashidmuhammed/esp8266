@@ -38,26 +38,6 @@ struct esp8266 {
 #define ESPF_ERROR		1	/* Parity error, etc. */
 };
 
-static void print_buf(uint8_t *buf, unsigned int len)
-{
-	int index;
-
-	for(index = 0; index < len; index++)
-		printk(KERN_CONT "%02X", buf[index]);
-	printk("\n");
-}
-
-static void print_msg(struct esp8266 *esp)
-{
-	int index;
-
-	printk(KERN_CONT "%02X,", esp->msg_type);
-
-	for(index = 0; index < esp->len; index++)
-		printk(KERN_CONT "%02X", esp->data[index]);
-	printk("\n");
-}
-
 /* fixme: Give proper function name */
 static int byte_send(struct esp8266 *esp, uint8_t byte)
 {
@@ -79,10 +59,6 @@ static int byte_send(struct esp8266 *esp, uint8_t byte)
 		esp->xhead = esp->xbuff + actual;
 		esp->dev->stats.tx_bytes += actual;
 
-		printk("Tx frame: ");
-		print_buf(esp->xbuff, esp->xpos);
-		printk("Actually Transmitted: ");
-		print_buf(esp->xbuff, actual);
 		esp->xpos = 0;
 	}
 	return 0;
@@ -258,8 +234,6 @@ static void generate_connect_header(struct msg_station_conf *conf, char *ssid, c
 
 static int espnet_init(struct net_device *dev)
 {
-	printk("esp8266: espnet_init called");
-
 	struct esp8266 *esp = netdev_priv(dev);
 	struct msg_station_conf conf;
 	char ssid[32] = "Raashid-samsung";
@@ -295,8 +269,6 @@ static int espnet_init(struct net_device *dev)
 /* Netdevice DOWN -> UP routine */
 static int espnet_open(struct net_device *dev)
 {
-	printk("esp8266: espnet_open called\n");
-
 	struct esp8266 *esp = netdev_priv(dev);
 
 	if (esp->tty == NULL) {
@@ -311,8 +283,6 @@ static int espnet_open(struct net_device *dev)
 
 static netdev_tx_t espnet_xmit(struct sk_buff *skb, struct net_device *dev)
 {
-	printk("esp8266: espnet_xmit called\n");
-
 	struct esp8266 *esp = netdev_priv(dev);
 
 	/* fixme: should mtu check be done at this point */
@@ -330,8 +300,6 @@ static netdev_tx_t espnet_xmit(struct sk_buff *skb, struct net_device *dev)
 	dev->stats.tx_bytes += skb->len;
 	esp->msg_type = MSG_ETHER_PACKET;
 	esp->len = skb->len;
-	printk("esp8266: Skbuffer: %d ", skb->len);
-	print_buf(skb->data, skb->len);
 	memmove(esp->data, skb->data, skb->len);
 	esp_send(esp);
 
@@ -340,7 +308,6 @@ static netdev_tx_t espnet_xmit(struct sk_buff *skb, struct net_device *dev)
 out:
 	spin_unlock(&esp->lock);
 	dev_kfree_skb(skb);
-	printk("esp8266: xmit exit\n");
 	return NETDEV_TX_OK;
 }
 
@@ -361,8 +328,6 @@ static int espnet_close(struct net_device *dev)
 
 static void esp_transmit(struct work_struct *work)
 {
-	printk("esp8266: esp_transmit called\n");
-
 	struct esp8266 *esp = container_of(work, struct esp8266, tx_work);
 	int actual;
 
@@ -387,9 +352,6 @@ static void esp_transmit(struct work_struct *work)
 	esp->xleft -= actual;
 	esp->xhead += actual;
 	spin_unlock_bh(&esp->lock);
-	printk("esp8266: esp_transmit transmitted %d bytes\n", actual);
-	printk("esp8266: esp_transmit Trasmitted: ");
-	print_buf(esp->xhead, actual);
 }
 
 static const struct net_device_ops esp_netdev_ops = {
@@ -462,8 +424,6 @@ static int esptty_open(struct tty_struct *tty)
 
 static void esp_forward(struct esp8266 *esp)
 {
-	printk("esp8266: esp_forward called\n");
-
 	struct sk_buff *skb;
 
 	esp->dev->stats.rx_bytes += esp->len;
@@ -483,10 +443,7 @@ static void esp_forward(struct esp8266 *esp)
 static void esptty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 			       char *fp, int count)
 {
-	printk("esp8266: esptty_receive_buf called\n");
-
 	struct esp8266 *esp = tty->disc_data;
-	struct sk_buff *skb;
 	int index = 0;
 	int ret;
 
@@ -503,14 +460,10 @@ static void esptty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 		}
 		esp->data[esp->len] = *(cp + index);
 		if (esp->data[esp->len] == SERIAL_STOP_BYTE) {
-			printk("Received data: ");
-			print_buf(esp->data, esp->len);
 			ret = esp_read(esp);
 			if (ret < 0)
 				printk("esp8266: esp receive error\n");
 
-			printk("Parsed data: ");
-			print_msg(esp);
 			if (esp->msg_type == MSG_ETHER_PACKET)
 				esp_forward(esp);
 			esp->len = -1;
@@ -534,8 +487,6 @@ static void esptty_write_wakeup(struct tty_struct *tty)
 
 static void esptty_close(struct tty_struct *tty)
 {
-	printk("esp8266: esptty_close called\n");
-
 	struct esp8266 *esp = (struct esp8266 *) tty->disc_data;
 
 	tty->disc_data = NULL;
