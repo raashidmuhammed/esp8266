@@ -17,8 +17,6 @@ MODULE_AUTHOR("Raashid Muhammed <raashidmuhammed@zilogic.com>");
 
 
 struct esp8266 {
-	int			magic;		/* fixme: Needs to be added to code */
-
 	struct tty_struct	*tty;
 	struct net_device	*dev;
 	spinlock_t		lock;
@@ -38,16 +36,6 @@ struct esp8266 {
 	uint16_t		crc;
 };
 
-static void print_buf(uint8_t *buf, unsigned int len)
-{
-	int index;
-
-	for(index = 0; index < len; index++)
-		printk(KERN_CONT "%02X", buf[index]);
-	printk("\n");
-}
-
-/* fixme: Give proper function name */
 static int serial_write(struct esp8266 *esp, uint8_t byte)
 {
 	int actual;
@@ -68,10 +56,6 @@ static int serial_write(struct esp8266 *esp, uint8_t byte)
 		esp->xhead = esp->xbuff + actual;
 		esp->dev->stats.tx_bytes += actual;
 
-		printk("Tx frame: ");
-		print_buf(esp->xbuff, esp->xpos);
-		printk("Actually Transmitted: ");
-		print_buf(esp->xbuff, actual);
 		esp->xpos = 0;
 	}
 	return 0;
@@ -149,9 +133,6 @@ static int check_data_integrity(struct esp8266 *esp)
 	uint16_t cal_crc;
 
 	cal_crc = crc16_ccitt_block(esp->rbuff, esp->rlen);
-
-	printk("Received CRC: %04X", esp->crc);
-	printk("Calc CRC: %04X", cal_crc);
 	if (esp->crc != cal_crc)
 		return -3;
 
@@ -311,8 +292,6 @@ static netdev_tx_t espnet_xmit(struct sk_buff *skb, struct net_device *dev)
 	dev->stats.tx_bytes += skb->len;
 	esp->msg_type = MSG_ETHER_PACKET;
 	esp->len = skb->len;
-	printk("esp8266: Skbuffer: %d ", skb->len);
-	print_buf(skb->data, skb->len);
 	memmove(esp->data, skb->data, skb->len);
 	esp_send(esp);
 
@@ -365,9 +344,6 @@ static void esp_transmit(struct work_struct *work)
 	esp->xleft -= actual;
 	esp->xhead += actual;
 	spin_unlock_bh(&esp->lock);
-	printk("esp8266: esp_transmit transmitted %d bytes\n", actual);
-	printk("esp8266: esp_transmit Trasmitted: ");
-	print_buf(esp->xhead, actual);
 }
 
 static const struct net_device_ops esp_netdev_ops = {
@@ -414,7 +390,6 @@ static int esptty_open(struct tty_struct *tty)
 	ether_addr_copy(dev->perm_addr, mac_addr);
 
 	esp = netdev_priv(dev);
-	/* fixme: Is magic no check required? */
 	esp->dev = dev;
 	esp->tty = tty;
 	esp->len = 0;
@@ -451,8 +426,6 @@ static void esp_forward(struct esp8266 *esp)
 	}
 	skb->dev = esp->dev;
 	memcpy(skb_put(skb, esp->rlen - 1), &esp->rbuff[1], esp->rlen - 1);
-	printk("esp8266: Forwarded sk_buff: ");
-	print_buf(skb->data, skb->len);
 	skb->protocol = eth_type_trans(skb, esp->dev);
 	netif_rx_ni(skb);
 	esp->dev->stats.rx_packets++;
@@ -465,8 +438,6 @@ static void esptty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 	int index = 0;
 	int ret;
 
-	/* fixme: Is magic no check required? */
-
 	/* Read the characters out of the buffer */
 	while (count--) {
 		if (fp && *fp++) {
@@ -476,14 +447,10 @@ static void esptty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 		}
 		esp->rbuff[esp->rlen] = *(cp + index);
 		if (esp->rbuff[esp->rlen] == SERIAL_STOP_BYTE) {
-			printk("Received data: ");
-			print_buf(esp->rbuff, esp->rlen);
 			ret = esp_read(esp);
 			if (ret < 0)
 				printk("esp8266: esp receive error\n");
 
-			printk("Parsed data: ");
-			print_buf(esp->rbuff, esp->rlen);
 			if (esp->rbuff[0] == MSG_ETHER_PACKET)
 				esp_forward(esp);
 			esp->rlen = -1;
