@@ -17,7 +17,7 @@ MODULE_AUTHOR("Raashid Muhammed <raashidmuhammed@zilogic.com>");
 
 
 struct esp8266 {
-	int			magic; /* fixme: Needs to added to code */
+	int			magic;		/* fixme: Needs to be added to code */
 
 	struct tty_struct	*tty;
 	struct net_device	*dev;
@@ -36,9 +36,6 @@ struct esp8266 {
 	uint8_t			data[BUF_SIZE];
 	unsigned int		len;
 	uint16_t		crc;
-
-	unsigned long 		flags;
-#define ESPF_ERROR		1	/* Parity error, etc. */
 };
 
 static void print_buf(uint8_t *buf, unsigned int len)
@@ -50,19 +47,8 @@ static void print_buf(uint8_t *buf, unsigned int len)
 	printk("\n");
 }
 
-static void print_msg(struct esp8266 *esp)
-{
-	int index;
-
-	printk(KERN_CONT "%02X,", esp->msg_type);
-
-	for(index = 0; index < esp->len; index++)
-		printk(KERN_CONT "%02X", esp->data[index]);
-	printk("\n");
-}
-
 /* fixme: Give proper function name */
-static int byte_send(struct esp8266 *esp, uint8_t byte)
+static int serial_write(struct esp8266 *esp, uint8_t byte)
 {
 	int actual;
 
@@ -96,15 +82,15 @@ static int stuff_tx_byte(struct esp8266 *esp, uint8_t byte)
 	int ret;
 
 	if ((byte == SERIAL_STOP_BYTE) || (byte == SERIAL_ESC_BYTE)) {
-		ret = byte_send(esp, SERIAL_ESC_BYTE);
+		ret = serial_write(esp, SERIAL_ESC_BYTE);
 		if (ret < 0)
 			return -1;
 
-		ret = byte_send(esp, byte ^ SERIAL_XOR_BYTE);
+		ret = serial_write(esp, byte ^ SERIAL_XOR_BYTE);
 		if (ret < 0)
 			return -1;
 	} else {
-		ret = byte_send(esp, byte);
+		ret = serial_write(esp, byte);
 		if (ret < 0)
 			return -1;
 	}
@@ -149,8 +135,6 @@ static int parse_data(struct esp8266 *esp)
 
 	if (esp->rlen < MIN_BYTE_EXPECTED)
 		return -1;
-
-	//	esp->msg_type = esp->data[0];
 
 	esp->crc = esp->rbuff[--(esp->rlen)];
 	crc_l = esp->rbuff[--(esp->rlen)];
@@ -202,9 +186,6 @@ static int esp_read(struct esp8266 *esp)
 		return -1;
 	}
 
-	//	memmove(esp->data, &esp->data[1], esp->len - 1);
-	//	esp->len = esp->len - 1;
-
 	return 0;
 }
 
@@ -232,7 +213,7 @@ static int esp_send(struct esp8266 *esp)
 	if (ret < 0)
 		return -1;
 
-	ret = byte_send(esp, SERIAL_STOP_BYTE);
+	ret = serial_write(esp, SERIAL_STOP_BYTE);
 	if (ret < 0)
 		return -1;
 
@@ -489,8 +470,6 @@ static void esptty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 	/* Read the characters out of the buffer */
 	while (count--) {
 		if (fp && *fp++) {
-			if (!test_and_set_bit(ESPF_ERROR, &esp->flags))
- 				esp->dev->stats.rx_errors++;
 			cp++;
 			printk("esp8266: Parity Errors\n");
 			continue;

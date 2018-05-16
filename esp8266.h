@@ -3,8 +3,6 @@
 #define MIN_BYTE_EXPECTED 3
 #define MAX_FRAME_LEN 4080
 #define BUF_SIZE 4080
-#define MAX_TX_BUF_SIZE 256
-
 
 enum SERIAL_BYTES {
 	SERIAL_STOP_BYTE = 0x7e,
