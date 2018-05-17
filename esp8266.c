@@ -363,8 +363,6 @@ static void esp_setup(struct net_device *dev)
 	ether_setup(dev);
 	dev->netdev_ops		= &esp_netdev_ops;
 	dev->destructor		= esp_free_netdev;
-
-	dev->mtu		= 1500;
 }
 
 static int esptty_open(struct tty_struct *tty)
