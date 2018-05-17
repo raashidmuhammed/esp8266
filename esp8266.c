@@ -377,7 +377,6 @@ static int esptty_open(struct tty_struct *tty)
 
 	rtnl_lock();
 
-	esp = tty->disc_data;
 	sprintf(name, "esp%d", 0);
 	dev = alloc_netdev(sizeof(*esp), name, NET_NAME_UNKNOWN, esp_setup);
 	if (!dev) {
