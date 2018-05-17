@@ -386,7 +386,7 @@ static int esptty_open(struct tty_struct *tty)
 
 	/* fixme: get mac from esp before setting */
 	ether_addr_copy(dev->dev_addr, mac_addr);
-	ether_addr_copy(dev->perm_addr, mac_addr);
+	dev->addr_assign_type = NET_ADDR_PERM;
 
 	esp = netdev_priv(dev);
 	esp->dev = dev;
