@@ -227,8 +227,8 @@ static int espnet_init(struct net_device *dev)
 {
 	struct esp8266 *esp = netdev_priv(dev);
 	struct msg_station_conf conf;
-	char ssid[32] = "Raashid-samsung";
-	char password[64] = "12345678";
+	char ssid[32] = "Zilogic Quiz";
+	char password[64] = "zilogic123";
 
 	if (configure_esp(esp, MSG_WIFI_SLEEP_MODE_SET, WIFI_SLEEP_NONE) < 0) {
 		printk("esp8266: Error Initializing Sleep Mode");
@@ -483,7 +483,7 @@ static void esptty_close(struct tty_struct *tty)
 static struct tty_ldisc_ops esp8266_ldisc = {
 	.owner		= THIS_MODULE,
 	.magic		= TTY_LDISC_MAGIC,
-	.name		= "esp8266",
+	.name		= "n_esp",
 	.open		= esptty_open,
 	.close		= esptty_close,
 	.receive_buf 	= esptty_receive_buf,
