@@ -354,6 +354,21 @@ static int esp_cfg80211_scan(struct wiphy *wiphy,
 			     struct cfg80211_scan_request *request)
 {
 	printk("esp8266: esp_scan called\n");
+	struct cfg80211_scan_info info = {};
+	struct cfg80211_bss *bss;
+	s32 signal = 0;
+	u64 timestamp = 0;
+	u16 capability = 0;
+	u32 beacon_period = 0;
+	int len = 0, ret, ie_len = 0;
+	u8 bssid = 0;
+	u8 ie_buf[34];
+
+	bss = cfg80211_inform_bss(wiphy, 0, CFG80211_BSS_FTYPE_UNKNOWN,
+			    &bssid, timestamp, capability, beacon_period,
+			    ie_buf, ie_len, signal, GFP_KERNEL);
+
+	cfg80211_scan_done(request, &info);
 	return 0;
 }
 
@@ -368,6 +383,8 @@ static int esp_cfg80211_disconnect(struct wiphy *wiphy, struct net_device *dev,
 				   struct cfg80211_connect_params *sme)
 {
 	printk("esp8266: esp_disconnect callled\n");
+
+
 	return 0;
 }
 
@@ -400,13 +417,12 @@ int wiphy_init(struct esp8266 *esp)
 {
 	int ret;
 	struct wiphy *wiphy = esp->wiphy;
-	struct device *dev;
 
 	//	wiphy->mgmt_stypes =
 	//	wiphy->max_remain_on_channel_duration = 5000;
 
 	/* set device pointer for wiphy */
-	set_wiphy_dev(wiphy, dev);
+	set_wiphy_dev(wiphy, esp->tty->dev);
 
 	wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION);
 
@@ -429,6 +445,8 @@ int wiphy_init(struct esp8266 *esp)
 	ret = wiphy_register(wiphy);
 	if (ret < 0) {
 		printk("esp8266: couldn't register wiphy device");
+		wiphy_free(esp->wiphy);
+		return -1;
 	}
 
 	return 0;
@@ -467,6 +485,8 @@ static int esptty_open(struct tty_struct *tty)
 	esp->dev->ieee80211_ptr = &esp->wdev;
 	esp->wdev.wiphy = wiphy;
 	esp->wdev.iftype = NL80211_IFTYPE_STATION;
+	esp->wdev.netdev = dev;
+	SET_NETDEV_DEV(dev, wiphy_dev(esp->wiphy));
 	esp->len = 0;
 	spin_lock_init(&esp->lock);
 	INIT_WORK(&esp->tx_work, esp_transmit);
@@ -559,6 +579,7 @@ static void esptty_close(struct tty_struct *tty)
 	esp->tty = NULL;
 	flush_work(&esp->tx_work);
 	unregister_netdev(esp->dev);
+	wiphy_unregister(esp->wiphy);
 }
 
 
