@@ -5,8 +5,10 @@
 #include <linux/if_arp.h>
 #include <linux/rtnetlink.h>
 #include <linux/etherdevice.h>
+#include <net/cfg80211.h>
 #include "crc16.h"
 #include "esp8266.h"
+#include "cfg80211.h"
 
 #define N_ESP8266 26
 
@@ -19,6 +21,8 @@ MODULE_AUTHOR("Raashid Muhammed <raashidmuhammed@zilogic.com>");
 struct esp8266 {
 	struct tty_struct	*tty;
 	struct net_device	*dev;
+	struct wiphy		*wiphy;
+	struct wireless_dev	wdev;
 	spinlock_t		lock;
 	struct work_struct	tx_work; 	/* Flush xmit buffer */
 
@@ -346,6 +350,33 @@ static void esp_transmit(struct work_struct *work)
 	spin_unlock_bh(&esp->lock);
 }
 
+static int esp_cfg80211_scan(struct wiphy *wiphy,
+			     struct cfg80211_scan_request *request)
+{
+	printk("esp8266: esp_scan called\n");
+	return 0;
+}
+
+static int esp_cfg80211_connect(struct wiphy *wiphy, struct net_device *dev,
+			     struct cfg80211_connect_params *sme)
+{
+	printk("esp8266: esp_connect called\n");
+	return 0;
+}
+
+static int esp_cfg80211_disconnect(struct wiphy *wiphy, struct net_device *dev,
+				   struct cfg80211_connect_params *sme)
+{
+	printk("esp8266: esp_disconnect callled\n");
+	return 0;
+}
+
+static struct cfg80211_ops esp_cfg80211_ops = {
+	.scan		= esp_cfg80211_scan,
+	.connect	= esp_cfg80211_connect,
+	.disconnect	= esp_cfg80211_disconnect,
+};
+
 static const struct net_device_ops esp_netdev_ops = {
 	.ndo_init		= espnet_init,
 	.ndo_open               = espnet_open,
@@ -365,20 +396,63 @@ static void esp_setup(struct net_device *dev)
 	dev->destructor		= esp_free_netdev;
 }
 
+int wiphy_init(struct esp8266 *esp)
+{
+	int ret;
+	struct wiphy *wiphy = esp->wiphy;
+	struct device *dev;
+
+	//	wiphy->mgmt_stypes =
+	//	wiphy->max_remain_on_channel_duration = 5000;
+
+	/* set device pointer for wiphy */
+	set_wiphy_dev(wiphy, dev);
+
+	wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION);
+
+	/* max num of ssids that can be probed during scanning */
+	wiphy->max_scan_ssids = 128;
+
+	wiphy->max_scan_ie_len = 1000; /* FIX: what is correct limit? */
+
+	//	wiphy->available_antennas_tx = ar->hw.tx_ant;
+	//	wiphy->available_antennas_rx = ar->hw.rx_ant;
+
+	wiphy->signal_type = CFG80211_SIGNAL_TYPE_MBM;	 /* fixme: */
+
+	wiphy->bands[NL80211_BAND_2GHZ] = &esp_band_2ghz;
+	wiphy->bands[NL80211_BAND_5GHZ] = &esp_band_5ghz;
+	// *fixme: required?	wiphy->max_sched_scan_ssids
+	/* fixme: required? wiphy->flags ? */
+	/* fixme: wiphy->probe_resp_offload */
+
+	ret = wiphy_register(wiphy);
+	if (ret < 0) {
+		printk("esp8266: couldn't register wiphy device");
+	}
+
+	return 0;
+}
+
 static int esptty_open(struct tty_struct *tty)
 {
 	int err;
 	char name[IFNAMSIZ];
 	struct esp8266 *esp;
+	/*fixme: name should be netdev */
 	struct net_device *dev = NULL;
+	struct wiphy *wiphy;
 	unsigned char mac_addr[] = {0x5c, 0xcf, 0x7f, 0x0b, 0x9c, 0xb6};
-
-	rtnl_lock();
 
 	sprintf(name, "esp%d", 0);
 	dev = alloc_netdev(sizeof(*esp), name, NET_NAME_UNKNOWN, esp_setup);
 	if (!dev) {
-		rtnl_unlock();
+		return -1;
+	}
+
+	wiphy = wiphy_new(&esp_cfg80211_ops, sizeof(struct esp8266));
+	if (!wiphy) {
+		printk("esp8266: couldn't allocate wiphy device");
 		return -1;
 	}
 
@@ -389,21 +463,29 @@ static int esptty_open(struct tty_struct *tty)
 	esp = netdev_priv(dev);
 	esp->dev = dev;
 	esp->tty = tty;
+	esp->wiphy = wiphy;
+	esp->dev->ieee80211_ptr = &esp->wdev;
+	esp->wdev.wiphy = wiphy;
+	esp->wdev.iftype = NL80211_IFTYPE_STATION;
 	esp->len = 0;
 	spin_lock_init(&esp->lock);
 	INIT_WORK(&esp->tx_work, esp_transmit);
 	tty->disc_data = esp;
 
-	err = register_netdevice(esp->dev);
+	err = wiphy_init(esp);
+	if (err) {
+		return err;
+	}
+
+	printk("wiphy registration complete\n");
+
+	err = register_netdev(esp->dev);
 	if (err) {
 		printk("Netdevice registration failed.\n");
 		esp->tty = NULL;
 		tty->disc_data = NULL;
-		rtnl_unlock();
 		return err;
 	}
-
-	rtnl_unlock();
 
 	tty->receive_room = 65536; /* Enables receive */
 
