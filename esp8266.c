@@ -356,18 +356,30 @@ static int esp_cfg80211_scan(struct wiphy *wiphy,
 	printk("esp8266: esp_scan called\n");
 	struct cfg80211_scan_info info = {};
 	struct cfg80211_bss *bss;
-	s32 signal = 0;
-	u64 timestamp = 0;
-	u16 capability = 0;
-	u32 beacon_period = 0;
-	int len = 0, ret, ie_len = 0;
-	u8 bssid = 0;
+	struct ieee80211_channel *channel;
+	u32 freq;
+	s32 signal = 1;
+	u64 timestamp = 1;
+	u16 capability = 1;
+	u32 beacon_period = 1;
+	int len = 1, ret, ie_len = 10;
+	u8 bssid[8] =  "Hello";
 	u8 ie_buf[34];
+	ie_buf[0] = 3;
+	ie_buf[1] = 4;
 
-	bss = cfg80211_inform_bss(wiphy, 0, CFG80211_BSS_FTYPE_UNKNOWN,
-			    &bssid, timestamp, capability, beacon_period,
+	freq = ieee80211_channel_to_frequency(1, NL80211_BAND_2GHZ);
+	printk("esp8266: freq: %d\n", freq);
+	channel = ieee80211_get_channel(wiphy, freq);
+	if (!channel) {
+		printk("esp8266: No channel\n");
+		return -1;
+	}
+
+	bss = cfg80211_inform_bss(wiphy, channel, CFG80211_BSS_FTYPE_UNKNOWN,
+			    bssid, timestamp, capability, beacon_period,
 			    ie_buf, ie_len, signal, GFP_KERNEL);
-
+	//	cfg80211_put_bss(wiphy, bss);
 	cfg80211_scan_done(request, &info);
 	return 0;
 }
