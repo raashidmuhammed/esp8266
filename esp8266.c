@@ -40,6 +40,7 @@ struct esp8266 {
 	uint16_t		crc;
 
 	uint16_t 		no_entries;
+	struct cfg80211_scan_request *scan_req;
 };
 
 static void print_buf(uint8_t *buf, unsigned int len)
@@ -372,18 +373,16 @@ static int esp_cfg80211_scan(struct wiphy *wiphy,
 			     struct cfg80211_scan_request *request)
 {
 	printk("esp8266: esp_scan entry\n");
-	struct cfg80211_scan_info info = {};
-	struct msg_wifi_scan_request scan_request;
+	struct msg_wifi_scan_request msg_scan;
 	struct esp8266 *esp = container_of(request->wdev, struct esp8266, wdev);
 
-	scan(&scan_request);
-	esp->msg_type = scan_request.msg_type;
-	memmove(esp->data, &scan_request, sizeof(struct msg_wifi_scan_request));
+	esp->scan_req = request;
+	scan(&msg_scan);
+	esp->msg_type = msg_scan.msg_type;
+	memmove(esp->data, &msg_scan, sizeof(struct msg_wifi_scan_request));
 	esp->len = sizeof(struct msg_wifi_scan_request) - 1;
 	memmove(esp->data, &esp->data[1], esp->len);
 	esp_send(esp);
-
-	cfg80211_scan_done(request, &info);
 
 	printk("esp8266: esp_scan exit\n");
 	return 0;
@@ -585,7 +584,8 @@ void esp_inform_bss(struct esp8266 *esp)
 			    entry.bssid, timestamp, capability, beacon_period,
 			    ie_buf, ie_len, signal, GFP_KERNEL);
 
-	cfg80211_put_bss(esp->wiphy, bss);
+	//	cfg80211_put_bss(esp->wiphy, bss);
+	esp->no_entries--;
 }
 
 static void esptty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
@@ -593,6 +593,8 @@ static void esptty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 {
 	printk("esp8266: receive_buf called\n");
 	struct esp8266 *esp = tty->disc_data;
+	struct cfg80211_scan_info info = {};
+
 	int index = 0;
 	int ret;
 
@@ -623,6 +625,10 @@ static void esptty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 			else if(esp->rbuff[0] == MSG_WIFI_SCAN_ENTRY) {
 				printk("esp8266: wifi scan entry\n");
 				esp_inform_bss(esp);
+				if (esp->no_entries == 0) {
+					printk("esp8266: scan bss informed all");
+					cfg80211_scan_done(esp->scan_req, &info);
+				}
 			}
 
 			esp->rlen = -1;
