@@ -38,7 +38,18 @@ struct esp8266 {
 	uint8_t			data[BUF_SIZE];
 	unsigned int		len;
 	uint16_t		crc;
+
+	uint16_t 		no_entries;
 };
+
+static void print_buf(uint8_t *buf, unsigned int len)
+{
+     int index;
+
+     for(index = 0; index < len; index++)
+             printk(KERN_CONT "%02X", buf[index]);
+     printk("\n");
+}
 
 static int serial_write(struct esp8266 *esp, uint8_t byte)
 {
@@ -87,6 +98,7 @@ static int stuff_tx_byte(struct esp8266 *esp, uint8_t byte)
 
 static int byte_destuff_packet(struct esp8266 *esp)
 {
+	printk("esp8266: byte_destuff_packet called\n");
 	int flag = 0;
 	int i = 0;
 	int j = 0;
@@ -215,6 +227,12 @@ static int configure_esp(struct esp8266 *esp, uint8_t msg_type, uint8_t mode)
 		return -1;
 
 	return 0;
+}
+
+static void scan(struct msg_wifi_scan_request *rscan)
+{
+	memset(rscan, 0, sizeof(struct msg_wifi_scan_request));
+	rscan->msg_type = MSG_WIFI_SCAN_REQUEST;
 }
 
 static void generate_connect_header(struct msg_station_conf *conf, char *ssid, char *password)
@@ -353,34 +371,21 @@ static void esp_transmit(struct work_struct *work)
 static int esp_cfg80211_scan(struct wiphy *wiphy,
 			     struct cfg80211_scan_request *request)
 {
-	printk("esp8266: esp_scan called\n");
+	printk("esp8266: esp_scan entry\n");
 	struct cfg80211_scan_info info = {};
-	struct cfg80211_bss *bss;
-	struct ieee80211_channel *channel;
-	u32 freq;
-	s32 signal = 1;
-	u64 timestamp = 1;
-	u16 capability = 1;
-	u32 beacon_period = 1;
-	int len = 1, ret, ie_len = 10;
-	u8 bssid[8] =  "Hello";
-	u8 ie_buf[34];
-	ie_buf[0] = 3;
-	ie_buf[1] = 4;
+	struct msg_wifi_scan_request scan_request;
+	struct esp8266 *esp = container_of(request->wdev, struct esp8266, wdev);
 
-	freq = ieee80211_channel_to_frequency(1, NL80211_BAND_2GHZ);
-	printk("esp8266: freq: %d\n", freq);
-	channel = ieee80211_get_channel(wiphy, freq);
-	if (!channel) {
-		printk("esp8266: No channel\n");
-		return -1;
-	}
+	scan(&scan_request);
+	esp->msg_type = scan_request.msg_type;
+	memmove(esp->data, &scan_request, sizeof(struct msg_wifi_scan_request));
+	esp->len = sizeof(struct msg_wifi_scan_request) - 1;
+	memmove(esp->data, &esp->data[1], esp->len);
+	esp_send(esp);
 
-	bss = cfg80211_inform_bss(wiphy, channel, CFG80211_BSS_FTYPE_UNKNOWN,
-			    bssid, timestamp, capability, beacon_period,
-			    ie_buf, ie_len, signal, GFP_KERNEL);
-	//	cfg80211_put_bss(wiphy, bss);
 	cfg80211_scan_done(request, &info);
+
+	printk("esp8266: esp_scan exit\n");
 	return 0;
 }
 
@@ -542,13 +547,56 @@ static void esp_forward(struct esp8266 *esp)
 	esp->dev->stats.rx_packets++;
 }
 
+void esp_get_entries(struct esp8266 *esp)
+{
+	if (esp->rbuff[1] != 0)
+		/* fixme: Notify scan failure */
+		printk("esp8266: scan failed\n");
+
+	esp->no_entries = (esp->rbuff[3] << 8) | esp->rbuff[2];
+}
+
+void esp_inform_bss(struct esp8266 *esp)
+{
+	printk("esp8266: esp_inform_bss called\n");
+	struct msg_wifi_scan_entry entry;
+	struct cfg80211_bss *bss;
+	struct ieee80211_channel *channel;
+	u32 freq;
+	s32 signal = 1;
+	u64 timestamp = 1;
+	u16 capability = 1;
+	u32 beacon_period = 1;
+	int ie_len = 10;
+	u8 ie_buf[34];
+	ie_buf[0] = 3;
+	ie_buf[1] = 4;
+
+	memcpy(&entry, &esp->rbuff[1], sizeof(struct msg_wifi_scan_entry));
+
+	freq = ieee80211_channel_to_frequency(entry.channel, NL80211_BAND_2GHZ);
+	printk("esp8266: freq: %d\n", freq);
+	channel = ieee80211_get_channel(esp->wiphy, freq);
+	if (!channel) {
+		printk("esp8266: No channel\n");
+	}
+
+	bss = cfg80211_inform_bss(esp->wiphy, channel, CFG80211_BSS_FTYPE_UNKNOWN,
+			    entry.bssid, timestamp, capability, beacon_period,
+			    ie_buf, ie_len, signal, GFP_KERNEL);
+
+	cfg80211_put_bss(esp->wiphy, bss);
+}
+
 static void esptty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 			       char *fp, int count)
 {
+	printk("esp8266: receive_buf called\n");
 	struct esp8266 *esp = tty->disc_data;
 	int index = 0;
 	int ret;
 
+	printk("esp8266: while loop start\n");
 	/* Read the characters out of the buffer */
 	while (count--) {
 		if (fp && *fp++) {
@@ -558,18 +606,32 @@ static void esptty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 		}
 		esp->rbuff[esp->rlen] = *(cp + index);
 		if (esp->rbuff[esp->rlen] == SERIAL_STOP_BYTE) {
+			printk("esp8266: proper packet received\n");
+			print_buf(esp->rbuff, esp->rlen);
 			ret = esp_read(esp);
 			if (ret < 0)
 				printk("esp8266: esp receive error\n");
 
-			if (esp->rbuff[0] == MSG_ETHER_PACKET)
+			if (esp->rbuff[0] == MSG_ETHER_PACKET) {
+				printk("esp8266: ethernet packet\n");
 				esp_forward(esp);
+			}
+			else if(esp->rbuff[0] == MSG_WIFI_SCAN_REPLY) {
+				printk("esp8266: wifi scan reply\n");
+				esp_get_entries(esp);
+			}
+			else if(esp->rbuff[0] == MSG_WIFI_SCAN_ENTRY) {
+				printk("esp8266: wifi scan entry\n");
+				esp_inform_bss(esp);
+			}
+
 			esp->rlen = -1;
 		}
 
 		index++;
 		esp->rlen++;
 	}
+	printk("esp8266: while loop end\n");
 }
 
 /*
@@ -578,6 +640,8 @@ static void esptty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
  */
 static void esptty_write_wakeup(struct tty_struct *tty)
 {
+	printk("esp8266: write_wakeup called\n");
+
 	struct esp8266 *esp = tty->disc_data;
 
 	schedule_work(&esp->tx_work);

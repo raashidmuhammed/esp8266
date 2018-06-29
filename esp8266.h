@@ -33,6 +33,9 @@ enum DEVICE_MODE {
 enum ESP_MSG_TYPE {
 	MSG_STATUS = 0x80,
 	MSG_WIFI_SLEEP_MODE_SET = 0x21,
+	MSG_WIFI_SCAN_REQUEST = 0x22,
+	MSG_WIFI_SCAN_REPLY = 0x23,
+	MSG_WIFI_SCAN_ENTRY = 0x24,
 	MSG_SET_FORWARDING_MODE = 0x11,
 	MSG_WIFI_MODE_SET = 0x20,
 	MSG_ETHER_PACKET = 0x01,
@@ -53,4 +56,25 @@ struct msg_station_conf {
 	uint8_t ssid[32];
 	uint8_t password_len;
 	uint8_t password[64];
+};
+
+struct msg_wifi_scan_request {
+	uint8_t msg_type;
+	uint8_t ssid_len;
+	uint8_t ssid[32];
+	uint8_t use_bssid;
+	uint8_t bssid[6];
+	uint8_t channel;
+	uint8_t show_hidden;
+};
+
+struct msg_wifi_scan_entry {
+	uint16_t index; /* index of current message, starts at 0 */
+	uint8_t ssid_len; /* ssid len */
+	uint8_t ssid[32];
+	uint8_t bssid[6];
+	uint8_t channel;
+	uint8_t auth_mode; /* enum wifi_auth_mode encoded as uint8_t */
+	int16_t rssi;
+	uint8_t is_hidden;
 };
