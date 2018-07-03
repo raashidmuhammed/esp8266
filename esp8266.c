@@ -566,10 +566,7 @@ void esp_inform_bss(struct esp8266 *esp)
 	u64 timestamp = 1;
 	u16 capability = 1;
 	u32 beacon_period = 1;
-	int ie_len = 10;
-	u8 ie_buf[34];
-	ie_buf[0] = 3;
-	ie_buf[1] = 4;
+	u8 ie[34];
 
 	memcpy(&entry, &esp->rbuff[1], sizeof(struct msg_wifi_scan_entry));
 
@@ -580,9 +577,13 @@ void esp_inform_bss(struct esp8266 *esp)
 		printk("esp8266: No channel\n");
 	}
 
+	ie[0] = WLAN_EID_SSID;
+	ie[1] = entry.ssid_len;
+	memcpy(&ie[2], entry.ssid, entry.ssid_len);
+
 	bss = cfg80211_inform_bss(esp->wiphy, channel, CFG80211_BSS_FTYPE_UNKNOWN,
 			    entry.bssid, timestamp, capability, beacon_period,
-			    ie_buf, ie_len, signal, GFP_KERNEL);
+			    ie, 2 + entry.ssid_len, signal, GFP_KERNEL);
 
 	//	cfg80211_put_bss(esp->wiphy, bss);
 	esp->no_entries--;
