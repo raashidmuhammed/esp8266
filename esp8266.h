@@ -78,3 +78,11 @@ struct msg_wifi_scan_entry {
 	int16_t rssi;
 	uint8_t is_hidden;
 };
+
+enum wifi_auth_mode {
+	WIFI_AUTH_OPEN = 0,
+	WIFI_AUTH_WEP = 1,
+	WIFI_AUTH_WPA_PSK = 2,
+	WIFI_AUTH_WPA2_PSK = 3,
+	WIFI_AUTH_WPA_WPA2_PSK = 4,
+} PACKED;

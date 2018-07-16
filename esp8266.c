@@ -227,6 +227,9 @@ static int configure_esp(struct esp8266 *esp, uint8_t msg_type, uint8_t mode)
 	if (esp_send(esp) < 0)
 		return -1;
 
+	esp->len = 0;
+	esp->rlen = 0;
+
 	return 0;
 }
 
@@ -236,12 +239,12 @@ static void scan(struct msg_wifi_scan_request *rscan)
 	rscan->msg_type = MSG_WIFI_SCAN_REQUEST;
 }
 
-static void generate_connect_header(struct msg_station_conf *conf, char *ssid, char *password)
+static void generate_connect_header(struct msg_station_conf *conf, char *ssid, size_t ssid_len, char *password, uint8_t password_len)
 {
 	memset(conf, 0, sizeof(struct msg_station_conf));
 	conf->msg_type = MSG_STATION_CONF_SET;
-	conf->ssid_len = strlen(ssid);
-	conf->password_len = strlen(password);
+	conf->ssid_len = ssid_len;
+	conf->password_len = password_len;
 	memcpy(&conf->ssid, ssid, conf->ssid_len);
 	memcpy(&conf->password, password, conf->password_len);
 }
@@ -249,9 +252,6 @@ static void generate_connect_header(struct msg_station_conf *conf, char *ssid, c
 static int espnet_init(struct net_device *dev)
 {
 	struct esp8266 *esp = netdev_priv(dev);
-	struct msg_station_conf conf;
-	char ssid[32] = "Zilogic Quiz";
-	char password[64] = "zilogic123";
 
 	if (configure_esp(esp, MSG_WIFI_SLEEP_MODE_SET, WIFI_SLEEP_NONE) < 0) {
 		printk("esp8266: Error Initializing Sleep Mode");
@@ -266,17 +266,6 @@ static int espnet_init(struct net_device *dev)
 		printk("esp8266: Error Initializing Device Mode");
 		return -1;
 	}
-
-	/* fixme: establishing connection with AP */
-	generate_connect_header(&conf, ssid, password);
-	esp->msg_type = conf.msg_type;
-	memmove(esp->data, &conf, sizeof(struct msg_station_conf));
-	esp->len = sizeof(struct msg_station_conf) - 1;
-	memmove(esp->data, &esp->data[1], esp->len);
-	esp_send(esp);
-
-	esp->len = 0;
-	esp->rlen = 0;
 
 	return 0;
 }
@@ -392,6 +381,20 @@ static int esp_cfg80211_connect(struct wiphy *wiphy, struct net_device *dev,
 			     struct cfg80211_connect_params *sme)
 {
 	printk("esp8266: esp_connect called\n");
+	struct esp8266 *esp = netdev_priv(dev);
+	struct msg_station_conf conf;
+
+	printk("esp8266: ssid:password %s:%s, %d:%d", sme->ssid, sme->key, sme->ssid_len, sme->key_len);
+	generate_connect_header(&conf, sme->ssid, sme->ssid_len, sme->key, sme->key_len);
+	esp->msg_type = conf.msg_type;
+	memmove(esp->data, &conf, sizeof(struct msg_station_conf));
+	esp->len = sizeof(struct msg_station_conf) - 1;
+	memmove(esp->data, &esp->data[1], esp->len);
+	esp_send(esp);
+
+	esp->len = 0;
+	esp->rlen = 0;
+
 	return 0;
 }
 
@@ -405,9 +408,9 @@ static int esp_cfg80211_disconnect(struct wiphy *wiphy, struct net_device *dev,
 }
 
 static struct cfg80211_ops esp_cfg80211_ops = {
-	.scan		= esp_cfg80211_scan,
-	.connect	= esp_cfg80211_connect,
-	.disconnect	= esp_cfg80211_disconnect,
+	.scan			= esp_cfg80211_scan,
+	.connect		= esp_cfg80211_connect,
+	.disconnect		= esp_cfg80211_disconnect,
 };
 
 static const struct net_device_ops esp_netdev_ops = {
@@ -562,11 +565,11 @@ void esp_inform_bss(struct esp8266 *esp)
 	struct cfg80211_bss *bss;
 	struct ieee80211_channel *channel;
 	u32 freq;
-	s32 signal = 1;
+	s32 signal = -30;
 	u64 timestamp = 1;
-	u16 capability = 1;
-	u32 beacon_period = 1;
-	u8 ie[34];
+	u16 capability = WLAN_CAPABILITY_ESS | WLAN_CAPABILITY_PRIVACY;
+	u32 beacon_period = 400;
+	u8 ie[53];
 
 	memcpy(&entry, &esp->rbuff[1], sizeof(struct msg_wifi_scan_entry));
 
@@ -577,15 +580,40 @@ void esp_inform_bss(struct esp8266 *esp)
 		printk("esp8266: No channel\n");
 	}
 
-	ie[0] = WLAN_EID_SSID;
-	ie[1] = entry.ssid_len;
-	memcpy(&ie[2], entry.ssid, entry.ssid_len);
+	/* fixme: Need to fix based on auth */
+	/* Based on
+	   https://mrncciew.files.wordpress.com/2014/08/cwsp-rsn-5.png,
+	   but there seems to be a mistake in no. of bytes in version
+	   field. */
+	ie[0] = WLAN_EID_RSN;
+	ie[1] = 18;
+	ie[2] = 0x01;
+	ie[3] = 0x00;
+	ie[4] = 0x00; /* extra */
+	ie[5] = 0x0f;
+	ie[6] = 0xac;
+	ie[7] = 0x04;
+	ie[8] = 0x01;
+	ie[9] = 0x00;
+	ie[10] = 0x00;
+	ie[11] = 0x0f;
+	ie[12] = 0xac;
+	ie[13] = 0x04;
+	ie[14] = 0x01;
+	ie[15] = 0x00;
+	ie[16] = 0x00;
+	ie[17] = 0x0f;
+	ie[18] = 0xac;
+	ie[19] = 0x02;
+	ie[20] = WLAN_EID_SSID;
+	ie[21] = entry.ssid_len;
+	memcpy(&ie[22], entry.ssid, entry.ssid_len);
 
 	bss = cfg80211_inform_bss(esp->wiphy, channel, CFG80211_BSS_FTYPE_UNKNOWN,
-			    entry.bssid, timestamp, capability, beacon_period,
-			    ie, 2 + entry.ssid_len, signal, GFP_KERNEL);
+				  entry.bssid, timestamp, capability, beacon_period,
+				  ie, 2 + entry.ssid_len + 6 + 14, entry.rssi, GFP_KERNEL);
 
-	//	cfg80211_put_bss(esp->wiphy, bss);
+	//cfg80211_put_bss(esp->wiphy, bss);
 	esp->no_entries--;
 }
 
